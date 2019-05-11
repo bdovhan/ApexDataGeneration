@@ -108,54 +108,34 @@ public class DataBuilder extends AbstractDataBuilder {
          */
         public String preprocess(String label, String data){
             String s = data;
-            System.debug(LoggingLevel.ERROR, '@@@  processEmbeddedRecords label: ' + label + ' generator ' + s  );
-      
             String prefix = s.subStringBefore('{');
-            System.debug(LoggingLevel.ERROR, '@@@ p: ' + prefix );
             String fieldName = prefix.subStringAfter(':');
             if ( fieldName.contains(',') )
                 fieldName = fieldName.subStringAfter(',');
             fieldName = fieldName.subStringBefore('=');
-            System.debug(LoggingLevel.ERROR, '@@@ fieldName: ' + fieldName );
             String m = '';
             while ( s.contains('{') ) {
                 m += prefix + 'l.' + label + '.' + fieldName;
-                System.debug(LoggingLevel.ERROR, '@@@ m: ' + m );
                 String v =  s.subStringAfter('{').subStringBefore('}');
                 s = s.subStringAfter('}');
                 
                 Integer x = v.countMatches('{') - v.countMatches('}');
-                System.debug(LoggingLevel.ERROR, '@@@ x: ' + x );
                 Integer i = 0;
                 while ( x > 0 && !String.isBlank(s) && i < 5 ) {
                     v += '}' + s.subStringBefore('}');
                     s = s.subStringAfter('}');
                     x = v.countMatches('{') - v.countMatches('}');
                     i++;
-                    System.debug(LoggingLevel.ERROR, '@@@ v: ' + v );
-                    System.debug(LoggingLevel.ERROR, '@@@ s: ' + s  );
-                    System.debug(LoggingLevel.ERROR, '@@@ x: ' + x );
                 }
-                System.debug(LoggingLevel.ERROR, '@@@  embed   label: ' + label + '.' + fieldName + ' v ' + v  );
                 
                 parent.build( label + '.' + fieldName, v );
-                System.debug(LoggingLevel.ERROR, '@@@  processEmbeddedRecords continuation label: ' + label +
-                        ' generator ' + s  );
-                
-                System.debug(LoggingLevel.ERROR, '@@@ v: ' + v );
-                System.debug(LoggingLevel.ERROR, '@@@ s: ' + s  );
                 prefix = s.subStringBefore('{');
                      
                 if ( prefix.contains(',') )
                     fieldName = prefix.subStringAfter(',');
                 fieldName = fieldName.subStringBefore('=');
-                System.debug(LoggingLevel.ERROR, '@@@ p: ' + prefix );
-                System.debug(LoggingLevel.ERROR, '@@@ fieldName: ' + fieldName );
             }
-                System.debug(LoggingLevel.ERROR, '@@@ m: ' + m );
-                System.debug(LoggingLevel.ERROR, '@@@ s: ' + s  );        
             m += s;
-            System.debug(LoggingLevel.ERROR, '@@@ m: ' + m );
             return m;
         }
     }
@@ -195,9 +175,9 @@ public class DataBuilder extends AbstractDataBuilder {
         ){
             // shouldn't be here doInsert parameter true? Why is it false?
             return setRelationshipValue(
-                    records, field, parent.build(
-                                    label + '.' + field, valueDefinition, 1, false
-                    )[0]
+                records, field, parent.build(
+                    label + '.' + field, valueDefinition, 1, false
+                )[0]
             );
         }
     }
@@ -205,6 +185,27 @@ public class DataBuilder extends AbstractDataBuilder {
     public abstract class SingleValueProcessor implements ValueDefinitionProcessor{
         abstract  Object getValue(String sObjectName, String valueDefinition);
         public List<SObject> setFieldsValue( List<SObject> records, String fieldsDefinition, Object value ) {
+            if ( records.size() > 0 ) {
+                String valueType = getType(value);
+                Map<String, Schema.SObjectField> fieldsMap = records[0].getSObjectType().getDescribe().fields.getMap();
+                for ( String field: fieldsDefinition.split('\\|') ) {
+                    String fieldType = String.valueOf( fieldsMap.get(field).getDescribe().getSOAPType() );
+                    System.debug(LoggingLevel.ERROR, '@@@ valueType: ' + valueType );
+                    System.debug(LoggingLevel.ERROR, '@@@ fieldType: ' + fieldType );
+                    if ( valueType != fieldType ) {
+                        throw new DataBuilderException(
+                            'Please check if you have registered value processor for value definition ' + value
+                            + ', because the type of value ' + valueType + ' and type ' + fieldType + ' of field '
+                            + field + ' do not match. If you do not register your Value Processor in your value '
+                            + 'processors list, the process will fall back to Idempotent operator and copy the '
+                            + 'field definition to field value and will try to set String value to non-string field '
+                            + ' type'
+                        );
+                    }
+                }
+                
+            }
+                
             for ( SObject r: records ) {
                 for ( String field: fieldsDefinition.split('\\|') ) {
                     r.put( field, value );
@@ -214,7 +215,7 @@ public class DataBuilder extends AbstractDataBuilder {
         }
 
         public List<SObject> process(
-                List<SObject> records, String label, String sObjectName, String field, String valueDefinition
+            List<SObject> records, String label, String sObjectName, String field, String valueDefinition
         ){
             return setFieldsValue( records, field, getValue( sObjectName, valueDefinition ) );
         }
@@ -223,11 +224,13 @@ public class DataBuilder extends AbstractDataBuilder {
     public class RecordTypeValueProvider extends SingleValueProcessor{
         Map<String, String> rtNamesToIdsMap = new Map<String, String>();
         public override Object getValue(String sObjectName, String valueDefinition) {
-            String keyDef = valueDefinition.substringAfter('r.');
-            return (String) Helper.either(
-                   rtNamesToIdsMap.get( keyDef ),
-                   Helper.getRecordTypeId( sObjectName, keyDef )
-            );
+            String rtName = valueDefinition.substringAfter('r.');
+            String recordTypeId = rtNamesToIdsMap.get( rtName );
+            if ( recordTypeId == null ) {
+                recordTypeId = SchemaProvider.getRecordTypeId(sObjectName, rtName);
+                rtNamesToIdsMap.put(rtName, recordTypeId);
+            }
+            return recordTypeId;
 
         }
         public Set<Object> getValues(String sObjectName, List<String> recordTypeNames) {
@@ -242,9 +245,9 @@ public class DataBuilder extends AbstractDataBuilder {
 
             }
             if ( !missing.isEmpty() ) {
-                Map<String, String> missingMap = Helper.getRecordTypeIds( sObjectName, missing );
+                Map<String, String> missingMap = SchemaProvider.getRecordTypeIds( sObjectName, missing );
                 rtNamesToIdsMap.putAll( missingMap );
-                toReturn.addAll( Helper.toObjectSet( missingMap.values() ) );
+                toReturn.addAll(Pluck.asSet(missingMap.values()));
             }
             return toReturn;
         }
@@ -330,17 +333,13 @@ public class DataBuilder extends AbstractDataBuilder {
             for ( SObject r: records ) {
                 Boolean match = false;
                 for ( Object key: dep.masterValueToDependentMap.keySet() ) {
-                    System.debug(LoggingLevel.ERROR, '@@@ key: ' + key + '  dep.masterField: ' + dep.masterField +
-                            ' value: ' +  r.get( dep.masterField ) );
                     if ( r.get( dep.masterField ) == key ) {
                         r.put( field, dep.masterValueToDependentMap.get( key ) );
                         match = true;
                         break;
                     }
                 }
-                System.debug(LoggingLevel.ERROR, '@@@ match: ' + match );
                 if ( !match && dep.elseValue != null ) {
-                    System.debug(LoggingLevel.ERROR, '@@@ field: ' + field + 'dep.elseValue: ' + dep.elseValue);
                     r.put( field, dep.elseValue );
                 }
             }
@@ -384,9 +383,6 @@ public class DataBuilder extends AbstractDataBuilder {
             }
 
             List<String> endItems = ending.split('>');
-            System.debug(LoggingLevel.ERROR, '@@@  endItems.size(): ' +  endItems.size() );
-            System.debug(LoggingLevel.ERROR, '@@@  endItems.size() % 2: ' +
-                    Math.mod( endItems.size(), 2 ) );
             String elseValueDef = Math.mod( endItems.size(), 2 ) == 0 ?
                                   '' : endItems[  endItems.size() - 1 ];
             Map<String, String> definitionMap = new Map<String, String>();
@@ -449,12 +445,11 @@ public class DataBuilder extends AbstractDataBuilder {
             if ( items.size() == 1 && ( items[0].startsWith( 'vs.' ) || items[0].startsWith( 'l.' ))) {
                 String valueType = items[0].subStringBefore('.');
                 String valueDef = items[0].subStringAfter('.');
-                System.debug(LoggingLevel.ERROR, '@@@ valueDef: ' + valueDef );
                 if ( valueType == 'l' ) {
                     List<SObject> data = parent.getData( valueDef );
 
                     System.assertNotEquals( null, data, 'Undefined lookup labeled key ' + valueDef );
-                    toReturn = Helper.toObjectSet( Helper.pluckIds(( data ) ) );
+                    toReturn = Pluck.asSet(Pluck.ids(( data ) ) );
                 } else {//if ( valueType == 'vs' )
                     Set<Object> values = parent.getValues( valueDef );
                     System.assertNotEquals( null, values,'Undefined values set labeled key ' + valueDef );
@@ -508,7 +503,7 @@ public class DataBuilder extends AbstractDataBuilder {
             return ( Math.random() * max ).longValue();
         }
         public List<SObject> process(
-                List<SObject> records, String label, String sObjectName, String field, String valueDefinition
+            List<SObject> records, String label, String sObjectName, String field, String valueDefinition
         ){
             for ( SObject r: records ) {
                 r.put( field, getValue(sObjectName, field, valueDefinition) );
@@ -538,10 +533,62 @@ public class DataBuilder extends AbstractDataBuilder {
             return valueDefinition.startsWith('random.date');
         }
     }
+    
+    public class RandomDateInRangeProcessor extends AbstractRandomValueProcessor{
+        private DateTime getEndDate(Integer value, String descriptor) {
+            DateTime now = DateTime.now();
+            DateTime toReturn = now;
+            switch on descriptor.toLowerCase() {
+                when 'y' {
+                    toReturn = now.addYears(value);
+                }
+                when 'm' {
+                    toReturn = now.addMonths(value);
+                }
+                when 'd' {
+                    toReturn = now.addDays(value);
+                }
+                when 'h' {
+                    toReturn = now.addHours(value);
+                }
+                when 'i' {
+                    toReturn = now.addMinutes(value);
+                }
+                when 's' {
+                    toReturn = now.addSeconds(value);
+                }
+            }
+            return toReturn;
+        }
+        public override Object getValue(String sObjectName, String field, String valueDefinition) {
+            List<String> valueItems = valueDefinition.split('\\.');
+            if ( valueItems.size() < 6 ) {
+                throw new DataBuilderException('RandomDateInRangeProcessor requires at least 6 items like random.inrange.date.y.-7.0 or random.inrange.date.y.-18.- but received ' + valueDefinition + ' with size ' + valueItems.size() );
+            }
+            String lastItem = valueItems[5];
+            if ( lastItem == '-' ) {
+                DateTime endDate = getEndDate(Integer.valueOf(valueItems[4]), valueItems[3]);
+                return DateTime.newInstance(getRandomLong(endDate.getTime()) ).date();
+            } else {
+                Integer value1 = Integer.valueOf(valueItems[4]);
+                Integer value2 = Integer.valueOf(valueItems[5]);
+                Integer min = Math.min(value1, value2);
+                Integer max = Math.max(value1, value2);
+                DateTime minDate = getEndDate(min, valueItems[3]);
+                DateTime maxDate = getEndDate(max, valueItems[3]);
+                return DateTime.newInstance(
+                    minDate.getTime() + getRandomLong(maxDate.getTime() - minDate.getTime())
+                ).date();
+            }
+        }
+        public Boolean detectIfApplicable(String valueDefinition){
+            return valueDefinition.startsWith('random.inrange.date');
+        }
+    }
 
     public class RandomPicklistProcessor extends AbstractRandomValueProcessor{
         public override Object getValue(String sObjectName, String field, String valueDefinition) {
-            return getRandom(Helper.getPicklistValues( sObjectName, field ));
+            return getRandom(SchemaProvider.getPicklistValues( sObjectName, field ));
         }
         public Boolean detectIfApplicable(String valueDefinition){
             return valueDefinition.startsWith('random.picklist');
@@ -572,34 +619,23 @@ public class DataBuilder extends AbstractDataBuilder {
         }
 
         public List<SObject> process(
-                List<SObject> records, String label, String sObjectName, String field, String valueDefinition
+            List<SObject> records, String label, String sObjectName, String field, String valueDefinition
         ){
-            Map<String, Schema.SObjectField> fieldsMap = Helper.getFieldMap( sObjectName );
+            Map<String, Schema.SObjectField> fieldsMap = SchemaProvider.getFieldMap( sObjectName );
             String definition = valueDefinition.substringAfter('builder.');
             List<String> items = definition.split('\\+');
             for ( SObject record: records ) {
                 String concatenatedValue = '';
                 for (String item: items) {
-                    System.debug(LoggingLevel.ERROR, '@@@ item: ' + item );
                     String hypotheticalFieldName = item.substringBefore('[');
-                    System.debug(LoggingLevel.ERROR, '@@@ hypotheticalFieldName: ' + hypotheticalFieldName );
-                    System.debug(LoggingLevel.ERROR, '@@@ fieldsMap.containsKey(hypotheticalFieldName): ' +
-                            fieldsMap.containsKey(hypotheticalFieldName) );
-                    System.debug(LoggingLevel.ERROR, '@@@ fieldsMap: ' +
-                            String.join(new List<String>(fieldsMap.keySet()), ',') );
-                    System.debug(LoggingLevel.ERROR, '@@@ (hypotheticalFieldName.lower()) in fieldsMap: ' +
-                            fieldsMap.containsKey(hypotheticalFieldName.toLowerCase()) );
                     if ( fieldsMap.containsKey(hypotheticalFieldName) ) {
                         String value = String.valueOf( record.get( hypotheticalFieldName ) );
-                        System.debug(LoggingLevel.ERROR, '@@@ value: ' + value );
                         if (item.endsWith(']')) {
                             Integer index = Integer.valueOf( item.substringBetween('[', ']') );
-                            System.debug(LoggingLevel.ERROR, '@@@ index: ' + index );
                             item = item.substringBefore('[');
                             System.assert(fieldsMap.containsKey(item), 'Field ' + item +
-                                    ' was not found in object ' + sObjectName );
+                                ' was not found in object ' + sObjectName );
                             value = value.substring(index, index+1);
-                            System.debug(LoggingLevel.ERROR, '@@@ value: ' + value );
                         }
                         concatenatedValue += value;
                     } else {
@@ -624,28 +660,29 @@ public class DataBuilder extends AbstractDataBuilder {
         KeyValueSplitter fieldValueSplitter, Splitter fieldsSplitter, List<ValueDefinitionProcessor> valueProcessors
     ) {
         nameDefinitionSplitter = (KeyValueSplitter)
-                Helper.either( nameDefSplitter, new SObjectNameValueDefinitionSplitter() );
-        this.preprocessor = (ValueDefinitionPreProcessor) Helper.either(
-                preprocessor, new ProcessEmbeddedRecordsPreProcessor(this) );
-        this.fieldValueSplitter = (KeyValueSplitter) Helper.either( fieldValueSplitter, new FieldValueSplitter() );
-        this.fieldsSplitter = (Splitter) Helper.either( fieldsSplitter, new FieldsCommaSplitter() );
+            Pluck.either( nameDefSplitter, new SObjectNameValueDefinitionSplitter() );
+        this.preprocessor = (ValueDefinitionPreProcessor) Pluck.either(
+            preprocessor, new ProcessEmbeddedRecordsPreProcessor(this) );
+        this.fieldValueSplitter = (KeyValueSplitter) Pluck.either( fieldValueSplitter, new FieldValueSplitter() );
+        this.fieldsSplitter = (Splitter) Pluck.either( fieldsSplitter, new FieldsCommaSplitter() );
         RecordTypeValueProvider rtProvider = new RecordTypeValueProvider();
         PrimitiveTypeValueProvider pvProvider = new PrimitiveTypeValueProvider(this);
-        this.valueProcessors = (List<ValueDefinitionProcessor>) Helper.either(
-                valueProcessors, new List<ValueDefinitionProcessor>{
-                    new SimpleEmbeddedValueProcessor(this),
-                    rtProvider,
-                    pvProvider,
-                    new SimpleDependencyValueProcessor(this),
-                    new DataDependencyValueProcessor(rtProvider, pvProvider),
-                    new MultiplicationProcessor(this, rtProvider, pvProvider),
-                    new RandomValueDefinitionProcessor(this),
-                    new RandomDateProcessor(),
-                    new RandomPicklistProcessor(),
-                    new RandomUkrainianPhoneProcessor(),
-                    new BuilderValueProcessor(),
-                    new IdempotentValueDefinitionProcessor()
-                }
+        this.valueProcessors = (List<ValueDefinitionProcessor>) Pluck.either(
+            valueProcessors, new List<ValueDefinitionProcessor>{
+                new SimpleEmbeddedValueProcessor(this),
+                rtProvider,
+                pvProvider,
+                new SimpleDependencyValueProcessor(this),
+                new DataDependencyValueProcessor(rtProvider, pvProvider),
+                new MultiplicationProcessor(this, rtProvider, pvProvider),
+                new RandomValueDefinitionProcessor(this),
+                new RandomDateInRangeProcessor(),
+                new RandomDateProcessor(),
+                new RandomPicklistProcessor(),
+                new RandomUkrainianPhoneProcessor(),
+                new BuilderValueProcessor(),
+                new IdempotentValueDefinitionProcessor()
+            }
         );
     }
     public Boolean addValueProcessor(ValueDefinitionProcessor vp) {
@@ -700,7 +737,7 @@ public class DataBuilder extends AbstractDataBuilder {
             // Do not remember why did I have to use this if condition
             if ( definition.contains('},{') ) {
                 for ( String generatorItem: definition.substringAfter('[{').substringBefore('}]')
-                        .split('\\},\\{')
+                    .split('\\},\\{')
                 ) {
                     records = processGeneratorDefinitionString( records, label, sObjectName, generatorItem );
                 }
@@ -708,8 +745,10 @@ public class DataBuilder extends AbstractDataBuilder {
                 records = processGeneratorDefinitionString( records, label, sObjectName, definition );
             }
         }
+        System.debug(LoggingLevel.ERROR, '@@@ records.size(): ' + records.size() );
         if ( doInsert )
-            insert records;
+            //insert records;
+            Database.insert(records, false);
         putData( label, records );
 
 
@@ -717,7 +756,7 @@ public class DataBuilder extends AbstractDataBuilder {
     }
 
     List<SObject> processGeneratorDefinitionString(
-            List<SObject> records, String label, String sObjectName, String definition
+        List<SObject> records, String label, String sObjectName, String definition
     ) {
         List<String> pairs = fieldsSplitter.split(definition);
         for ( String pair: pairs ) {
@@ -727,10 +766,6 @@ public class DataBuilder extends AbstractDataBuilder {
             Object value = valueDef;
 
             for ( ValueDefinitionProcessor processor: valueProcessors ) {
-                System.debug(LoggingLevel.ERROR, '@@@ processor: ' + processor );
-                System.debug(LoggingLevel.ERROR, '@@@ valueDef: ' + valueDef );
-                System.debug(LoggingLevel.ERROR, '@@@ processor.detectIfApplicable( valueDef): ' +
-                        processor.detectIfApplicable( valueDef) );
                 if ( processor.detectIfApplicable( valueDef) ) {
                     records = processor.process(records, label, sObjectName, field, valueDef );
                     break;
@@ -739,4 +774,6 @@ public class DataBuilder extends AbstractDataBuilder {
         }
         return records;
     }
+    
+    public class DataBuilderException extends Exception{}
 }
